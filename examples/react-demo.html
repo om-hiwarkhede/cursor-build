@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cursor Build — React demo (no bundler)</title>
+<script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@18.3.1",
+      "react-dom/client": "https://esm.sh/react-dom@18.3.1/client"
+    }
+  }
+</script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif; background: #fbfbfc; color: #16181d; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 8vh 24px; }
+  h1 { font-size: clamp(30px, 5vw, 48px); letter-spacing: -.02em; line-height: 1.08; margin: 0 0 16px; }
+  p { color: #5b6070; font-size: 17px; line-height: 1.6; }
+  code { background: #ececef; padding: 1px 6px; border-radius: 4px; font-size: 14px; }
+  .card { border: 1px solid #e6e7ea; border-radius: 14px; padding: 20px 22px; background: #fff; margin-top: 22px; }
+  button { border: 0; border-radius: 10px; padding: 12px 20px; font: 600 15px/1 inherit; background: #0D99FF; color: #fff; cursor: pointer; }
+  .tag { display: inline-block; padding: 3px 10px; border-radius: 999px; background: #eef6ff; color: #0b78d0; font: 600 11px/1.4 inherit; margin-bottom: 14px; letter-spacing: .02em; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- Note: in a real project you write JSX and a bundler (Vite/Next) compiles it.
+     This standalone demo avoids JSX so it can run straight from the file. -->
+<script type="module">
+  import React from "react";
+  import { createRoot } from "react-dom/client";
+  // In real projects: import { SwarmProvider, useSwarm, SwarmTrigger } from "cursor-build/react"
+  import { SwarmProvider, SwarmTrigger, useSwarm } from "../src/react/provider.js";
+
+  const h = React.createElement;
+
+  function Hero() {
+    const swarm = useSwarm();
+    return h("section", { className: "wrap" },
+      h("span", { className: "tag" }, "React · zero build"),
+      h("h1", null, "Page rebuilt live by a swarm of cursors."),
+      h("p", null,
+        "The whole application is wrapped in ", h("code", null, "<SwarmProvider>"),
+        ". On mount it captures the DOM, wipes the page, and the swarm redraws every box, types every line and reassembles every component."),
+      h("button", { onClick: swarm.replay }, "Replay the build"),
+      h(SwarmTrigger, {
+        label: "Rebuild with the swarm",
+        labelActive: "Stop the swarm",
+        style: { marginLeft: 10, background: "#ececef", color: "#16181d" },
+      }),
+      h("div", { className: "card" },
+        h("strong", null, "Swarm status: "), swarm.active ? "building…" : "idle"),
+    );
+  }
+
+  function App() {
+    return h(SwarmProvider, { autoStart: true, startDelay: 1000, sound: true }, h(Hero));
+  }
+
+  createRoot(document.getElementById("root")).render(h(App));
+</script>
+</body>
+</html>
