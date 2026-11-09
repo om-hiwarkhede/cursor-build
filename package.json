@@ -57,9 +57,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/JoelBastoneLopez/swarm-rebuild.git",
-    "directory": "cursor-build"
+    "url": "git+https://github.com/om-hiwarkhede/cursor-build.git"
   },
-  "homepage": "https://github.com/JoelBastoneLopez/swarm-rebuild/tree/main/cursor-build#readme",
-  "bugs": "https://github.com/JoelBastoneLopez/swarm-rebuild/issues"
+  "homepage": "https://github.com/om-hiwarkhede/cursor-build#readme",
+  "bugs": {
+    "url": "https://github.com/om-hiwarkhede/cursor-build/issues"
+  }
 }
