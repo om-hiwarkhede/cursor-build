@@ -38,10 +38,16 @@ export function createCursorBuild(options = {}) {
   const RED = "#F24822";
   const RULER = 20;
   const MIN_AGENTS = 8;
-  const MAX_AGENTS = 48;
-  const FLOCK_AGENTS = 36;
-  const INTRO_AGENTS = 18;
-  const MAX_ITEMS = 4000;
+  // Low-end devices (few cores, little memory, touch) get a smaller budget:
+  // fewer captured items, fewer agents, fewer simultaneous audio voices.
+  const WEAK =
+    (navigator.hardwareConcurrency || 8) <= 4 ||
+    (navigator.deviceMemory || 8) <= 4 ||
+    (window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+  const MAX_AGENTS = WEAK ? 20 : 48;
+  const FLOCK_AGENTS = WEAK ? 20 : 36;
+  const INTRO_AGENTS = WEAK ? 10 : 18;
+  const MAX_ITEMS = WEAK ? 1600 : 4000;
   const MAX_WORLD_H = 40000;
   const SVGNS = "http://www.w3.org/2000/svg";
 
@@ -49,8 +55,14 @@ export function createCursorBuild(options = {}) {
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
   const easeOut = (t) => 1 - Math.pow(1 - t, 3);
+  // Items whose visual state changed since the last frame. The renderer only
+  // touches these instead of scanning the whole model every frame.
+  const dirtyItems = new Set();
   const bump = (it) => {
     it.v++;
+    dirtyItems.add(it);
+    // twins mirror the master's build state; keep them in the dirty set too
+    if (it.twinUsers) for (const tw of it.twinUsers) dirtyItems.add(tw);
   };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
@@ -95,7 +107,7 @@ export function createCursorBuild(options = {}) {
     ns: [12, 12],
   };
 
-  function cursorSVG(shape, c) {
+  function cursorShape(shape, c) {
     const st = 'stroke="#fff" stroke-width="1.5" stroke-linejoin="round"';
     switch (shape) {
       case "arrow":
@@ -143,6 +155,16 @@ export function createCursorBuild(options = {}) {
         } fill="${c}" ${st}/>`;
     }
     return "";
+  }
+
+  // A cheap drop-shadow: the same geometry filled black, offset a pixel down.
+  // Replaces the per-element CSS drop-shadow filter, which re-rasterizes every
+  // frame while cursors move.
+  function cursorSVG(shape, c) {
+    const s = cursorShape(shape, c);
+    if (!s) return "";
+    const sil = s.replace(/fill="(?!none)[^"]*"/g, 'fill="#000"').replace(/stroke="[^"]*"/g, 'stroke="#000"');
+    return `<g transform="translate(0.6 1.5)" opacity=".22">${sil}</g>${s}`;
   }
 
   const IMG_ICON =
@@ -213,11 +235,35 @@ export function createCursorBuild(options = {}) {
     "-webkit-mask-image", "-webkit-mask-size", "-webkit-mask-position", "-webkit-mask-repeat",
   ];
 
+  // getComputedStyle is the most expensive read during capture; every lookup
+  // goes through one cache shared by the capture walk and the clone styler.
+  const csCache = new Map();
+  function getCS(el) {
+    let c = csCache.get(el);
+    if (!c) {
+      c = getComputedStyle(el);
+      csCache.set(el, c);
+    }
+    return c;
+  }
+
+  // The same element's style is often serialized several times (root style,
+  // box style, clone style). Memoize per (computed style object, prop list).
+  const ssMemo = new Map();
   function styleString(cs, props) {
-    let s = "";
-    for (const p of props) {
-      const v = cs.getPropertyValue(p);
-      if (v !== "") s += `${p}:${v};`;
+    let m = ssMemo.get(cs);
+    if (!m) {
+      m = new Map();
+      ssMemo.set(cs, m);
+    }
+    let s = m.get(props);
+    if (s === undefined) {
+      s = "";
+      for (const p of props) {
+        const v = cs.getPropertyValue(p);
+        if (v !== "") s += `${p}:${v};`;
+      }
+      m.set(props, s);
     }
     return s;
   }
@@ -271,7 +317,7 @@ export function createCursorBuild(options = {}) {
       dst.remove();
       return null;
     }
-    const cs = getComputedStyle(src);
+    const cs = getCS(src);
     if (cs.display === "none") {
       dst.remove();
       return null;
@@ -388,9 +434,23 @@ export function createCursorBuild(options = {}) {
       }
       u.replaceWith(g);
     }
-    const html = dst.outerHTML;
     const ids = new Set();
-    html.replace(/url\(\s*["']?#([^"')\s]+)["']?\s*\)/g, (_, id) => ids.add(id));
+    const re = /url\(\s*["']?#([^"')\s]+)["']?\s*\)/g;
+    // Walk attributes instead of serializing outerHTML: much cheaper on big SVGs.
+    const scan = (n) => {
+      for (const a of n.attributes) {
+        re.lastIndex = 0;
+        let mm;
+        while ((mm = re.exec(a.value))) ids.add(mm[1]);
+      }
+      if (n.localName === "style" && n.textContent) {
+        re.lastIndex = 0;
+        let mm;
+        while ((mm = re.exec(n.textContent))) ids.add(mm[1]);
+      }
+      for (const ch of n.children) scan(ch);
+    };
+    scan(dst);
     if (!ids.size) return;
     let defs = null;
     for (const id of ids) {
@@ -500,15 +560,7 @@ export function createCursorBuild(options = {}) {
     const items = [];
     const roots = [];
     let order = 0;
-    const csCache = new Map();
-    const css = (el) => {
-      let c = csCache.get(el);
-      if (!c) {
-        c = getComputedStyle(el);
-        csCache.set(el, c);
-      }
-      return c;
-    };
+    const css = getCS;
     const inlineCache = new Map();
     const fullClip = { l: -1e9, t: -1e9, r: 1e9, b: 1e9 };
     const viewClip = { l: 0, t: 0, r: innerWidth, b: innerHeight };
@@ -1272,8 +1324,10 @@ export function createCursorBuild(options = {}) {
       if (it.kind !== "text" || it.copyOf || !it.text) continue;
       const k = `${it.layer}|${Math.round(it.tb.x / 4)}|${Math.round(it.tb.y / 4)}|${it.text}`;
       const m = twinKey.get(k);
-      if (m) it.twinOf = m;
-      else twinKey.set(k, it);
+      if (m) {
+        it.twinOf = m;
+        (m.twinUsers || (m.twinUsers = [])).push(it);
+      } else twinKey.set(k, it);
     }
 
     // ------------------------------------------------------------- tasks
@@ -1496,7 +1550,7 @@ export function createCursorBuild(options = {}) {
 .layer,.port{position:absolute;overflow:hidden;pointer-events:none}
 .layer{inset:0}
 .world{position:absolute;left:0;top:0;will-change:transform}
-.it{position:absolute;left:0;top:0;transform-origin:0 0}
+.it{position:absolute;left:0;top:0;transform-origin:0 0;contain:layout style}
 .it.settle{transition:transform .3s cubic-bezier(.2,.8,.2,1)}
 .r{background-color:var(--ph,#D9D9D9);transition:background-color .22s ease,border-radius .22s ease}
 .r.st{background-color:transparent}
@@ -1520,7 +1574,7 @@ export function createCursorBuild(options = {}) {
 .badges,.cursors{position:absolute;inset:0;pointer-events:none;overflow:hidden}
 .badge{position:absolute;transform:translate(-50%);padding:1px 4px;border-radius:2px;color:#fff;font:600 11px/16px Inter,system-ui,-apple-system,"Segoe UI",sans-serif;white-space:nowrap;font-variant-numeric:tabular-nums}
 .cursor{position:absolute;left:0;top:0;will-change:transform}
-.cursor svg{position:absolute;overflow:visible;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.28))}
+.cursor svg{position:absolute;overflow:visible}
 .rulers{position:absolute;inset:0;pointer-events:none}
 .ruler{position:absolute;background:#2c2c2c;pointer-events:none}
 .ruler svg{display:block}
@@ -1810,7 +1864,6 @@ export function createCursorBuild(options = {}) {
         n.innerHTML = IMG_ICON;
       } else if (it.kind === "text") {
         n.className = "it t";
-        prepText(it);
       } else if (it.kind === "line") {
         n.className = "it l";
         n.innerHTML = '<svg width="1" height="1"><path fill="none"/></svg>';
@@ -1938,6 +1991,13 @@ export function createCursorBuild(options = {}) {
           n.style.transformOrigin = `${ox}px ${it.tb.y - it.y}px`;
         }
       }
+      // Finished text (incl. twins, which sync `done` from their master) no
+      // longer needs the typing scratch data — but dup masters keep the clone.
+      if (it.done && it.kind === "text" && !it.dupMaster && it.units) {
+        it.units = null;
+        it.seq = null;
+        it.full = null;
+      }
     }
 
     renderCursors(E) {
@@ -2051,6 +2111,8 @@ export function createCursorBuild(options = {}) {
         if (this._rulersOn) {
           this.rulers.innerHTML = "";
           this._rulersOn = false;
+          this._ru = null;
+          this._ra = null;
         }
         return;
       }
@@ -2097,10 +2159,23 @@ export function createCursorBuild(options = {}) {
           a += `<line y1="${y}" y2="${y}" x1="0" x2="${RULER}" stroke="${RED}"/>`;
         }
       }
-      this.rulers.innerHTML =
-        `<div class="ruler ruler-top" style="transform:translateY(${f1((t - 1) * 100)}%)"><svg width="${W}" height="${RULER}">${u}</svg></div>` +
-        `<div class="ruler ruler-left" style="transform:translateX(${f1((t - 1) * 100)}%)"><svg width="${RULER}" height="${H}">${a}</svg></div>` +
-        `<div class="ruler-corner" style="opacity:${f1(t)}"></div>`;
+      // Rebuild the ruler DOM only when its content changed; the slide-in
+      // animation is a plain transform write per frame.
+      if (u !== this._ru || a !== this._ra) {
+        this._ru = u;
+        this._ra = a;
+        this.rulers.innerHTML =
+          `<div class="ruler ruler-top"><svg width="${W}" height="${RULER}">${u}</svg></div>` +
+          `<div class="ruler ruler-left"><svg width="${RULER}" height="${H}">${a}</svg></div>` +
+          `<div class="ruler-corner"></div>`;
+      }
+      const kids = this.rulers.children;
+      if (kids.length >= 3) {
+        const k = f1((t - 1) * 100);
+        kids[0].style.transform = `translateY(${k}%)`;
+        kids[1].style.transform = `translateX(${k}%)`;
+        kids[2].style.opacity = f1(t);
+      }
     }
 
     render(E) {
@@ -2112,7 +2187,11 @@ export function createCursorBuild(options = {}) {
           for (const d of this.backdrops) d.style.opacity = o;
         }
       }
-      if (E.items) for (const it of E.items) this.renderItem(it);
+      // Only re-render items whose state actually changed since last frame.
+      if (E.items && dirtyItems.size) {
+        for (const it of dirtyItems) this.renderItem(it);
+        dirtyItems.clear();
+      }
       this.renderOverlay(E);
       this.renderCursors(E);
       this.renderRulers(E);
@@ -2149,6 +2228,10 @@ export function createCursorBuild(options = {}) {
       this.retired = 0;
       this.doneCount = 0;
       this.waitCount = 0;
+      this.readyList = [];
+      this.backlogCount = 0;
+      this.byGate = [];
+      this.gateIx = 0;
       const vp = this.vp;
       for (let n = 0; n < INTRO_AGENTS; n++) {
         const side = n % 2 === 0;
@@ -2165,8 +2248,68 @@ export function createCursorBuild(options = {}) {
       this.groups = m.groups;
       this.guides = m.guides;
       this.guideDeps = new Map(m.guides.map((g) => [g, g.deps || []]));
+      // dup masters must keep their source clones (copies render from them)
+      for (const g of m.groups)
+        for (let i = g.master.start; i < g.master.end; i++) m.items[i].dupMaster = true;
+      // Scheduler: a ready-queue + gate-ordered frontier pointer instead of
+      // scanning every task each frame.
+      this.readyList = [];
+      this.backlogCount = 0;
+      this.byGate = m.tasks.slice().sort((a, b) => a.gate - b.gate);
+      this.gateIx = 0;
+      for (const t of m.tasks) {
+        for (const d of t.deps) (d.dependents || (d.dependents = [])).push(t);
+        if (t.deps.length === 0) this.prepareTask(t);
+      }
+      this.advanceFrontier();
       this.waitCount = m.tasks.length;
       this.ready = true;
+    }
+
+    depsDone(t) {
+      for (const d of t.deps) if (d.state !== "done") return false;
+      return true;
+    }
+
+    // count a task as "unlocked work" (backlog) and maybe hand it out
+    prepareTask(t) {
+      if (t._counted || t.state !== "wait") return;
+      if (t.layer === "world" && t.gate > this.frontier) return;
+      t._counted = true;
+      this.backlogCount++;
+      this.tryReady(t);
+    }
+
+    tryReady(t) {
+      if (t.state !== "wait" || t._ready) return;
+      if (t.layer === "world" && t.gate > this.frontier) return;
+      if (!this.depsDone(t)) return;
+      t._ready = true;
+      this.readyList.push(t);
+    }
+
+    // called when the frontier moves down the page
+    advanceFrontier() {
+      const byGate = this.byGate;
+      const f = this.frontier;
+      let ix = this.gateIx;
+      while (ix < byGate.length) {
+        const t = byGate[ix];
+        if (t.layer === "world" && t.gate > f) break;
+        ix++;
+        if (t.state === "wait" && !t._counted) {
+          t._counted = true;
+          this.backlogCount++;
+          this.tryReady(t);
+        }
+      }
+      this.gateIx = ix;
+    }
+
+    onTaskDone(t) {
+      if (t._counted) this.backlogCount--;
+      const deps = t.dependents;
+      if (deps) for (const d of deps) if (d.state === "wait") this.tryReady(d);
     }
 
     makeCursor(x, y, home = false) {
@@ -2281,19 +2424,9 @@ export function createCursorBuild(options = {}) {
     }
 
     available() {
-      const out = [];
-      for (const t of this.tasks) {
-        if (t.state !== "wait") continue;
-        if (t.layer === "world" && t.gate > this.frontier) continue;
-        let ok = true;
-        for (const d of t.deps)
-          if (d.state !== "done") {
-            ok = false;
-            break;
-          }
-        if (ok) out.push(t);
-      }
-      return out;
+      // O(1): the ready-queue is maintained incrementally (see setModel /
+      // advanceFrontier / onTaskDone) instead of scanning every task per frame.
+      return this.readyList.slice();
     }
 
     pick(c, list) {
@@ -2303,6 +2436,7 @@ export function createCursorBuild(options = {}) {
       const bot = this.viewBot;
       const cy = c.sticky ? c.y + this.viewTop : c.y;
       for (const t of list) {
+        if (t.state !== "wait") continue;
         const y = this.taskY(t);
         const u = y >= top && y <= bot ? 0 : y < top ? 1 : 2;
         const s = u * 1e6 + (u === 1 ? top - y : y) * 0.6 + Math.abs(y - cy) * 0.4 - (t.spec.type === "guide" ? 5e5 : 0);
@@ -2316,9 +2450,7 @@ export function createCursorBuild(options = {}) {
 
     // work that's unlocked but unfinished (things past the frontier need scrolling, not waiting)
     backlog() {
-      let n = 0;
-      for (const t of this.tasks) if (t.state !== "done" && (t.layer !== "world" || t.gate <= this.frontier)) n++;
-      return n;
+      return this.backlogCount;
     }
 
     step(dt) {
@@ -2328,8 +2460,11 @@ export function createCursorBuild(options = {}) {
       const sv = Math.abs(vp.sy - (this.lastScroll == null ? vp.sy : this.lastScroll)) / Math.max(dt, 0.001);
       this.lastScroll = vp.sy;
       this.vel = Math.max(this.vel * Math.exp(-dt * 1.2), this.vel * 0.7 + sv * 0.3);
-      if (this.started) this.frontier = Math.max(this.frontier, this.viewBot + 250);
-      const avail = this.started ? this.available() : [];
+      if (this.started) {
+        this.frontier = Math.max(this.frontier, this.viewBot + 250);
+        this.advanceFrontier();
+      }
+      const avail = this.started ? this.readyList : [];
       this.tempo = clamp(2.1 + this.vel / 900 + (avail.length / Math.max(1, this.cursors.length)) * 0.5, 2.1, 4.5) * this.speed;
 
       if (this.rulers.want > 0) this.rulers.lastNeed = this.time;
@@ -2392,9 +2527,13 @@ export function createCursorBuild(options = {}) {
 
       for (const c of this.cursors) {
         if (c.task || c.leaving || c.follow) continue;
-        const t = this.pick(c, avail);
+        const t = this.pick(c, this.readyList);
         if (!t) continue;
-        avail.splice(avail.indexOf(t), 1);
+        const rix = this.readyList.indexOf(t);
+        if (rix >= 0) {
+          this.readyList[rix] = this.readyList[this.readyList.length - 1];
+          this.readyList.pop();
+        }
         t.state = "active";
         this.waitCount--;
         c.task = t;
@@ -2425,6 +2564,15 @@ export function createCursorBuild(options = {}) {
             c.task.state = "done";
             c.task.doneAt = this.time;
             this.doneCount++;
+            this.onTaskDone(c.task);
+            // free the text tree's scratch data once its builder is finished
+            // (dup masters keep their clone: copies render from it)
+            const fin = c.task.spec.it;
+            if (fin && fin.kind === "text" && !fin.dupMaster) {
+              fin.full = null;
+              fin.units = null;
+              fin.seq = null;
+            }
             c.task = null;
             c.ov = null;
             if (c.sticky) {
@@ -2676,6 +2824,13 @@ export function createCursorBuild(options = {}) {
 
     run(c, t) {
       const s = t.spec;
+      // Text trees are prepared lazily, when their builder actually needs them,
+      // instead of cloning every text item up-front at mount.
+      if ((s.type === "text" || s.type === "edit") && s.it && !s.it.units) {
+        prepText(s.it);
+        const tu = s.it.twinUsers;
+        if (tu) for (const tw of tu) if (!tw.units) prepText(tw);
+      }
       switch (s.type) {
         case "rect":
           return this.drawBox(c, s.it, false);
@@ -2965,6 +3120,7 @@ export function createCursorBuild(options = {}) {
       const ox = src.box.x - dst.box.x;
       const oy = src.box.y - dst.box.y;
       for (const it of dst.items) {
+        if (it.kind === "text" && !it.units) prepText(it);
         it.vis = true;
         it.mode = "master";
         it.dx = ox;
@@ -3236,7 +3392,7 @@ export function createCursorBuild(options = {}) {
     piano(midi, when, vel, pan, ring = 2.4) {
       const now = this.now();
       this.ends = this.ends.filter((e) => e > now);
-      if (this.ends.length >= 28) return;
+      if (this.ends.length >= (WEAK ? 12 : 28)) return;
       const ctx = this.ctx;
       const f = mtof(midi);
       const v = this.bus(when, pan, 0.85);
@@ -3620,7 +3776,7 @@ export function createCursorBuild(options = {}) {
       this.engine.setModel(model);
       this.model = model;
       mark("mount");
-      const wait = 1500 - (performance.now() - this.t0);
+      const wait = 1200 - (performance.now() - this.t0);
       if (wait > 0) await sleep(wait);
       if (this.dead) return;
       this.engine.start();
@@ -3639,7 +3795,7 @@ export function createCursorBuild(options = {}) {
         }
       } catch(_) {}
       await nextFrame();
-      await sleep(150);
+      await sleep(100);
       window.scrollTo(0, 0);
       if (document.documentElement) document.documentElement.scrollTop = 0;
       if (document.body) document.body.scrollTop = 0;
@@ -3744,6 +3900,15 @@ export function createCursorBuild(options = {}) {
       } catch (err) {
         console.error("[cursor-build]", err);
       }
+      // Once the rebuild finished and every cursor dispersed, stop the loop
+      // (after a short grace so fades settle) instead of spinning frames idle.
+      const E = this.engine;
+      if (E.started && E.flocking && E.disperse && E.cursors.length === 0) {
+        if (this._idleAt == null) this._idleAt = now;
+        if (now - this._idleAt < 1500) this.raf = requestAnimationFrame((t) => this.frame(t));
+        return;
+      }
+      this._idleAt = null;
       this.raf = requestAnimationFrame((t) => this.frame(t));
     }
 
@@ -3828,6 +3993,9 @@ export function createCursorBuild(options = {}) {
         cancelAnimationFrame(this.raf);
         for (const u of this.unbinds || []) u();
         this.view.host.remove();
+        dirtyItems.clear();
+        csCache.clear();
+        ssMemo.clear();
         if (this.opts && typeof this.opts.onStop === "function") {
           try {
             this.opts.onStop({ reveal: !!reveal });
@@ -3863,7 +4031,12 @@ export function createCursorBuild(options = {}) {
         for (const u of this.unbinds || []) u();
         setTimeout(() => {
           this.view.host.remove();
+          dirtyItems.clear();
+          csCache.clear();
+          ssMemo.clear();
           try {
+            const hStyle = document.getElementById("__swarm_hide_style");
+            if (hStyle) hStyle.remove();
             document.documentElement.style.removeProperty("scroll-behavior");
             if (document.body) document.body.style.removeProperty("scroll-behavior");
             for (const v of document.querySelectorAll("video")) {
@@ -3898,6 +4071,9 @@ export function createCursorBuild(options = {}) {
 
   function start(overrides) {
     if (app) return;
+    dirtyItems.clear();
+    csCache.clear();
+    ssMemo.clear();
     const o = overrides ? { ...options, ...overrides } : options;
     if (o.sound != null) soundPref = !!o.sound;
     app = new App();
@@ -3921,6 +4097,9 @@ export function createCursorBuild(options = {}) {
       for (const u of a.unbinds || []) u();
       a.view.host.remove();
       if (a.sfx) a.sfx.close(0.1);
+      dirtyItems.clear();
+      csCache.clear();
+      ssMemo.clear();
       // rebuild from where the first run started so screenshot crops line up again
       if (lastShot) a.env.scrollTo(lastShot.at.sy, lastShot.at.sx);
     }

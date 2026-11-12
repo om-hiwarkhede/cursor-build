@@ -1,6 +1,6 @@
 {
   "name": "cursor-build",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Swarm Rebuild-style website animations as an npm package. Wrap your app with a provider and watch a swarm of animated cursors bootstrap your interface: covers the page, then draws, types and assembles it back.",
   "type": "module",
   "main": "src/index.js",
