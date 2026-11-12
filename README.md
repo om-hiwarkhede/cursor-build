@@ -91,7 +91,7 @@ That's the whole integration. On mount, `<SwarmProvider>`:
 2. 🎨 **Blanks** the page behind an overlay canvas.
 3. 🐝 **Spawns a swarm** of cursors that rebuild the UI live — one cursor per element.
 4. 🎹 **Plays a note** for every element that lands (press `M` to mute).
-5. ✅ **Offers the real page back** on completion ("Go live" / `Esc`). On unmount it cleans up.
+5. ✅ **Offers the real page back** on completion ("Go live" / `Esc`, or just click — the build is interruptible). The hand-back is a fast crossfade over the already-visible page, so there is no flash and no dead time. On unmount it cleans up.
 
 ### Controlling the swarm from anywhere in the tree
 
@@ -167,7 +167,8 @@ button.onclick = () => swarm.toggle();
 | `tour` | `boolean` | `true` | Cinematic auto-scroll while the swarm builds below the fold. |
 | `hud` | `boolean` | `false` | Show the built-in HUD control bar (agent dots, layer counter, progress, exit). Hidden by default so your own UI owns the screen. |
 | `disperse` | `boolean` | `true` | After the rebuild completes, cursors hold formation for a beat, then fly off-screen. Set `false` to keep them flocking like the extension. |
-| `autoLive` | `boolean` | auto | Hand the live page back automatically once the swarm disperses (the overlay fades and your real page becomes clickable again). Default: on when the built-in HUD is hidden, off when `hud: true`. Set `true` / `false` to override. |
+| `autoLive` | `boolean` | auto | Hand the live page back automatically once the swarm disperses — the overlay crossfades away over the real page (no white flash) and stops blocking clicks immediately. Default: on when the built-in HUD is hidden, off when `hud: true`. Set `true` / `false` to override. |
+| `skipOnClick` | `boolean` | `true` | While the swarm owns the screen, a click/tap anywhere hands the live page back instantly (the overlay stops blocking and crossfades out) instead of leaving a non-interactive rebuild on screen. Set `false` to make the show uninterruptible (Esc still exits). |
 | `skip` | `(el: Element) => boolean` | — | Exclude elements from the captured blueprint. |
 | `onComplete` | `(r) => void` | — | Fires when everything has been rebuilt. |
 | `onStop` | `(r) => void` | — | Fires after teardown. |

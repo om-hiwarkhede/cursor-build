@@ -2602,7 +2602,7 @@ export function createCursorBuild(options = {}) {
       this.spawnCooldown -= dt;
       // After the rebuild finishes, the swarm holds formation briefly, then
       // every cursor flies off-screen and is removed (option: disperse).
-      if (this.disperse && !this.releasing && this.time - (this.endTime || this.time) > 2.4) {
+      if (this.disperse && !this.releasing && this.time - (this.endTime || this.time) > 1.5) {
         this.releasing = true;
         for (const c of [...this.cursors]) {
           c.gen = null;
@@ -3836,8 +3836,19 @@ export function createCursorBuild(options = {}) {
         }
         this.unlockSound();
       }, true);
-      // browsers only let audio start after a click/keypress on the page
-      on(window, "pointerdown", () => this.unlockSound(), true);
+      // Browsers only let audio start after a gesture. And a click anywhere
+      // while the overlay owns the page means "I want to use the page": hand
+      // the live page back straight away instead of leaving a fake rebuild
+      // that ignores every interaction.
+      on(window, "pointerdown", (e) => {
+        this.unlockSound();
+        if (!this.engine || this.dead) return;
+        if (this.opts && this.opts.skipOnClick === false) return;
+        if (e.button != null && e.button !== 0) return;
+        const path = typeof e.composedPath === "function" ? e.composedPath() : null;
+        if (path && this.view && path.indexOf(this.view.hud) >= 0) return;
+        stop(true);
+      }, true);
       if (!this.env.isRoot) {
         on(this.view.host, "wheel", (e) => {
           e.preventDefault();
@@ -3911,7 +3922,7 @@ export function createCursorBuild(options = {}) {
       const E = this.engine;
       if (E.started && E.flocking && E.disperse && E.cursors.length === 0) {
         if (this._idleAt == null) this._idleAt = now;
-        const grace = this.autoLive ? 2600 : 1500;
+        const grace = this.autoLive ? 200 : 1200;
         if (now - this._idleAt < grace) {
           this.raf = requestAnimationFrame((t) => this.frame(t));
           return;
@@ -4008,69 +4019,62 @@ export function createCursorBuild(options = {}) {
 
     destroy(reveal) {
       unhidePage();
+
+      // 1. Hand the live page back FIRST. The overlay is still fully opaque at
+      //    this point, so nothing is visible yet — but from here on the real
+      //    page sits underneath and the fade becomes a crossfade instead of a
+      //    flash of empty browser background.
+      try {
+        this.restoreRevealStyles();
+        const hStyle = document.getElementById("__swarm_hide_style");
+        if (hStyle) hStyle.remove();
+        document.documentElement.style.removeProperty("scroll-behavior");
+        if (document.body) document.body.style.removeProperty("scroll-behavior");
+        for (const v of document.querySelectorAll("video")) {
+          try { v.play().catch(() => {}); } catch (_) {}
+        }
+      } catch (_) {}
+
       if (this.sfx) {
         if (reveal) this.sfx.release();
-        this.sfx.close(reveal ? 1.4 : 0.25);
+        this.sfx.close(reveal ? 0.6 : 0.25);
       }
-      const finish = () => {
-        this.dead = true;
-        cancelAnimationFrame(this.raf);
-        for (const u of this.unbinds || []) u();
-        this.view.host.remove();
-        dirtyItems.clear();
-        csCache.clear();
-        ssMemo.clear();
-        this.restoreRevealStyles();
-        if (this.opts && typeof this.opts.onStop === "function") {
-          try {
-            this.opts.onStop({ reveal: !!reveal });
-          } catch (_) {}
-        }
-        try {
-          const hStyle = document.getElementById("__swarm_hide_style");
-          if (hStyle) hStyle.remove();
-          document.documentElement.style.removeProperty("scroll-behavior");
-          if (document.body) document.body.style.removeProperty("scroll-behavior");
-          for (const v of document.querySelectorAll("video")) {
-            try { v.play().catch(() => {}); } catch(_) {}
-          }
-        } catch(_) {}
-      };
-      if (reveal) {
+      if (reveal && this.engine) {
         this.engine.releasing = true;
         this.engine.flocking = true;
         for (const c of this.engine.cursors) {
           c.gen = null;
           c.follow = false;
         }
-        this.view.hud.classList.remove("on");
-        setTimeout(() => {
-          this.view.host.style.setProperty("opacity", "0", "important");
-        }, 450);
-        setTimeout(finish, 1150);
-      } else {
-        this.view.host.style.setProperty("transition", "opacity .25s ease", "important");
-        this.view.host.style.setProperty("opacity", "0", "important");
+      }
+      if (this.view && this.view.hud) this.view.hud.classList.remove("on");
+
+      // 2. One fast fade for every exit path (~350ms), and stop swallowing
+      //    pointer events immediately so the page is clickable during the fade.
+      const finish = () => {
         this.dead = true;
         cancelAnimationFrame(this.raf);
         for (const u of this.unbinds || []) u();
-        setTimeout(() => {
-          this.view.host.remove();
-          dirtyItems.clear();
-          csCache.clear();
-          ssMemo.clear();
-          this.restoreRevealStyles();
+        if (this.view && this.view.host) this.view.host.remove();
+        dirtyItems.clear();
+        csCache.clear();
+        ssMemo.clear();
+        if (this.opts && typeof this.opts.onStop === "function") {
           try {
-            const hStyle = document.getElementById("__swarm_hide_style");
-            if (hStyle) hStyle.remove();
-            document.documentElement.style.removeProperty("scroll-behavior");
-            if (document.body) document.body.style.removeProperty("scroll-behavior");
-            for (const v of document.querySelectorAll("video")) {
-              try { v.play().catch(() => {}); } catch(_) {}
-            }
-          } catch(_) {}
-        }, 260);
+            this.opts.onStop({ reveal: !!reveal });
+          } catch (_) {}
+        }
+      };
+      const host = this.view && this.view.host;
+      if (host) {
+        host.style.setProperty("transition", "opacity .35s ease", "important");
+        host.style.setProperty("pointer-events", "none", "important");
+        host.style.setProperty("opacity", "0", "important");
       }
+      this.dead = true;
+      cancelAnimationFrame(this.raf);
+      for (const u of this.unbinds || []) u();
+      setTimeout(finish, host ? 370 : 0);
     }
   }
 
