@@ -3700,6 +3700,10 @@ export function createCursorBuild(options = {}) {
         if (typeof this.opts.skip === "function") this.env.skip = this.opts.skip;
         if (this.opts.tour === false) this.tour = false;
       }
+      // Hand the live page back automatically once the swarm disperses —
+      // unless the built-in HUD is shown (the user controls it there), unless
+      // autoLive is set explicitly.
+      this.autoLive = this.opts && this.opts.autoLive != null ? !!this.opts.autoLive : !(this.opts && this.opts.hud === true);
       const shotP = this.loadShot();
       this.view = new View(this.env);
       if (!(this.opts && this.opts.hud === true)) this.view.hud.style.display = "none";
@@ -3737,6 +3741,7 @@ export function createCursorBuild(options = {}) {
           el.style.setProperty("opacity", "1", "important");
           el.style.setProperty("transform", "none", "important");
           el.style.setProperty("visibility", "visible", "important");
+          (this.revealTouched || (this.revealTouched = [])).push(el);
         });
       } catch (_) {}
 
@@ -3900,12 +3905,18 @@ export function createCursorBuild(options = {}) {
       } catch (err) {
         console.error("[cursor-build]", err);
       }
-      // Once the rebuild finished and every cursor dispersed, stop the loop
-      // (after a short grace so fades settle) instead of spinning frames idle.
+      // Once the rebuild finished and every cursor dispersed, hand the live
+      // page back: automatically (autoLive) or by idling the loop and waiting
+      // for the user's Go live / Esc.
       const E = this.engine;
       if (E.started && E.flocking && E.disperse && E.cursors.length === 0) {
         if (this._idleAt == null) this._idleAt = now;
-        if (now - this._idleAt < 1500) this.raf = requestAnimationFrame((t) => this.frame(t));
+        const grace = this.autoLive ? 2600 : 1500;
+        if (now - this._idleAt < grace) {
+          this.raf = requestAnimationFrame((t) => this.frame(t));
+          return;
+        }
+        if (this.autoLive) stop(true);
         return;
       }
       this._idleAt = null;
@@ -3982,6 +3993,19 @@ export function createCursorBuild(options = {}) {
       }
     }
 
+    // Undo the inline !important overrides we forced onto scroll-reveal
+    // elements during capture, so the site's own animations work after exit.
+    restoreRevealStyles() {
+      for (const el of this.revealTouched || []) {
+        try {
+          el.style.removeProperty("opacity");
+          el.style.removeProperty("transform");
+          el.style.removeProperty("visibility");
+        } catch (_) {}
+      }
+      this.revealTouched = null;
+    }
+
     destroy(reveal) {
       unhidePage();
       if (this.sfx) {
@@ -3996,6 +4020,7 @@ export function createCursorBuild(options = {}) {
         dirtyItems.clear();
         csCache.clear();
         ssMemo.clear();
+        this.restoreRevealStyles();
         if (this.opts && typeof this.opts.onStop === "function") {
           try {
             this.opts.onStop({ reveal: !!reveal });
@@ -4034,6 +4059,7 @@ export function createCursorBuild(options = {}) {
           dirtyItems.clear();
           csCache.clear();
           ssMemo.clear();
+          this.restoreRevealStyles();
           try {
             const hStyle = document.getElementById("__swarm_hide_style");
             if (hStyle) hStyle.remove();

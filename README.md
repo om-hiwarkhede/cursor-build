@@ -167,6 +167,7 @@ button.onclick = () => swarm.toggle();
 | `tour` | `boolean` | `true` | Cinematic auto-scroll while the swarm builds below the fold. |
 | `hud` | `boolean` | `false` | Show the built-in HUD control bar (agent dots, layer counter, progress, exit). Hidden by default so your own UI owns the screen. |
 | `disperse` | `boolean` | `true` | After the rebuild completes, cursors hold formation for a beat, then fly off-screen. Set `false` to keep them flocking like the extension. |
+| `autoLive` | `boolean` | auto | Hand the live page back automatically once the swarm disperses (the overlay fades and your real page becomes clickable again). Default: on when the built-in HUD is hidden, off when `hud: true`. Set `true` / `false` to override. |
 | `skip` | `(el: Element) => boolean` | — | Exclude elements from the captured blueprint. |
 | `onComplete` | `(r) => void` | — | Fires when everything has been rebuilt. |
 | `onStop` | `(r) => void` | — | Fires after teardown. |
